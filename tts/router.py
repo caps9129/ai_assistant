@@ -1,5 +1,6 @@
 # tts/router.py
 
+from openai import OpenAI
 import threading
 import time
 from pathlib import Path
@@ -7,18 +8,13 @@ import fasttext
 import nltk
 
 # 導入我們設計的設定檔和 TTS 引擎
-# 假設這些檔案都已存在於 tts/ 資料夾中
 from .config import TTS_CONFIG
 from .base_engine import TTSEngineBase
 from .edge_tts_engine import EdgeTTSEngine
 from .openai_tts_engine import OpenAITTSEngine
 
 # 確保 NLTK 的斷句模型存在，如果不存在則自動下載
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    print("NLTK 'punkt' model not found. Downloading...")
-    nltk.download('punkt', quiet=True)
+nltk.data.find('tokenizers/punkt')
 
 
 class FastTextLangDetector:
@@ -62,17 +58,19 @@ class LanguageRouterTTS:
         provider_config = self.config["providers"][self.active_provider]
         EngineClass = EdgeTTSEngine if self.active_provider == "edge" else OpenAITTSEngine
 
-        for lang, config in provider_config.items():
+        for lang, cfg in provider_config.items():
             print(
                 f"... Initializing '{lang}' voice using {self.active_provider}...")
-            # 使用 kwargs 以獲得更好的彈性
             self.tts_engines[lang] = EngineClass(
-                voice=config.voice,
+                voice=cfg.voice,
                 stop_event=self.stop_event,
-                model=config.model,
-                sample_rate=config.sample_rate
+                model=cfg.model,
+                sample_rate=cfg.sample_rate,
+                backlog_frames_limit=12000,
+                pause_drain_batch=24
             )
 
+    # ---------------- Lifecycle ---------------- #
     def start_stream(self):
         """啟動所有引擎的持久音訊流"""
         print("[TTS Router] Starting persistent streams for all engines...")
@@ -87,21 +85,21 @@ class LanguageRouterTTS:
             if hasattr(engine, 'stop_stream'):
                 engine.stop_stream()
 
+    # ---------------- Core Speak APIs ---------------- #
+    def _pick_engine(self, text: str) -> TTSEngineBase | None:
+        """依語言/供應商挑選一個合適的引擎"""
+        if self.active_provider == "openai":
+            # OpenAI 模型本身不分語言，固定用 'en' 這個 slot
+            return self.tts_engines.get("en")
+        else:
+            lang_code, _ = self.detector.detect(text)
+            return self.tts_engines.get(lang_code, self.tts_engines.get("en"))
+
     def say(self, text: str):
         """播放單一、完整的文字字串。"""
         if not text or not text.strip():
             return
-
-        engine = None
-        if self.active_provider == "openai":
-            # OpenAI 不分語言，隨便選一個引擎即可
-            engine = self.tts_engines.get("en")
-        else:
-            lang_code, _ = self.detector.detect(text)
-            # 選擇對應語言的引擎，如果不存在則 fallback 到英文
-            engine = self.tts_engines.get(
-                lang_code, self.tts_engines.get("en"))
-
+        engine = self._pick_engine(text)
         if engine:
             engine.say(text)
         else:
@@ -141,6 +139,52 @@ class LanguageRouterTTS:
 
         print("[TTS Router] Text stream finished.")
 
+    # ---------------- Barge-in Helpers ---------------- #
+    def duck(self, db: float = -18.0):
+        """將所有引擎音量降低（duck）。"""
+        for engine in self.tts_engines.values():
+            if hasattr(engine, "duck"):
+                engine.duck(db)
+
+    def unduck(self):
+        """將所有引擎音量恢復。"""
+        for engine in self.tts_engines.values():
+            if hasattr(engine, "unduck"):
+                engine.unduck()
+
+    def stop_current_utterance(self):
+        """輕量中斷目前這句（不關閉底層 stream）。"""
+        for engine in self.tts_engines.values():
+            if hasattr(engine, "stop_current_utterance"):
+                engine.stop_current_utterance()
+
+    # === NEW: 暫停/恢復輸出（不關閉串流、不中斷 producer） ===
+    def pause_output(self, *, flush: bool = False, timeout_ms: int | None = None):
+        """
+        暫停所有引擎的『播放端』：
+        - flush=False：將後續產生的音訊累積到各引擎的 backlog，之後可接續播放
+        - flush=True：清掉 backlog（保留串流/連線）
+        - timeout_ms：可選。若引擎支援，會覆寫暫停逾時（逾時自動 resume+flush）
+        """
+        for engine in self.tts_engines.values():
+            if hasattr(engine, "pause_output"):
+                try:
+                    engine.pause_output(flush=flush, timeout_ms=timeout_ms)
+                except TypeError:
+                    # 舊版引擎只接受 flush 參數
+                    engine.pause_output(flush=flush)
+
+    def resume_output(self, *, flush: bool = False):
+        """
+        恢復所有引擎的『播放端』：
+        - flush=False：把暫停期間累積的 backlog 先播完再繼續新內容
+        - flush=True：丟棄 backlog，直接從最新內容繼續
+        """
+        for engine in self.tts_engines.values():
+            if hasattr(engine, "resume_output"):
+                engine.resume_output(flush=flush)
+
+    # ---------------- Misc ---------------- #
     def stop(self):
         self.stop_event.set()
 
@@ -153,71 +197,47 @@ class LanguageRouterTTS:
 
 # --- 測試方法 ---
 
-def simulate_llm_stream(text, chunk_size=10, delay=0.05):
-    """一個產生器函式，用於模擬 LLM 的串流輸出效果。"""
-    print(
-        f"\n--- Simulating LLM Stream (chunk_size={chunk_size}, delay={delay}s) ---")
-    for i in range(0, len(text), chunk_size):
-        yield text[i:i+chunk_size]
-        time.sleep(delay)
-    print("--- LLM Stream Simulation Finished ---")
+def simulate_llm_stream():
+    _client = OpenAI()
+    stream = _client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "介紹一下何謂太陽系"}],
+        stream=True,
+    )
+    for chunk in stream:
+        content = chunk.choices[0].delta.content
+        if content:
+            yield content
 
 
 if __name__ == '__main__':
-    # 這個區塊讓您可以直接運行 `python -m tts.router` 來進行獨立測試
-    # openai
     PROVIDER_TO_TEST = "openai"
     tts_router = LanguageRouterTTS(tts_provider=PROVIDER_TO_TEST)
 
-    # 2. 準備測試文字
-    full_text = "這是一個完整的句子，用於測試非串流播放。"
-    stream_text = "這是一個串流測試。第一句話會被先播放。這是第二句，它會稍微晚一點出現。最後，才是結尾的部分。"
-
-    # 3. 測試持久流的生命週期 (Start/Stop Stream)
     print("\n" + "="*40)
-    print(">>> 測試 1: 持久流生命週期 (start_stream / stop_stream)")
+    print(">>> 測試 3: 串流 say_stream() 方法 (with router duck/unduck)")
     print("="*40)
-    tts_router.start_stream()
-    print("... 持久流已啟動，等待 2 秒...")
-    time.sleep(2)
-    tts_router.stop_stream()
-    print("... 持久流已停止。")
-
-    # 4. 測試非串流 (Non-Stream) 播放
-    print("\n" + "="*40)
-    print(">>> 測試 2: 非串流 say() 方法")
-    print("="*40)
-    tts_router.start_stream()  # 播放前需要啟動流
-    tts_router.say(full_text)
-    tts_router.stop_stream()  # 播放後關閉流
-
-    # 5. 測試串流 (Stream) 播放
-    print("\n" + "="*40)
-    print(">>> 測試 3: 串流 say_stream() 方法")
-    print("="*40)
-    tts_router.start_stream()
-    llm_generator = simulate_llm_stream(stream_text)
-    tts_router.say_stream(llm_generator)
-    tts_router.stop_stream()
-
-    # 6. 測試打斷功能
-    print("\n" + "="*40)
-    print(">>> 測試 4: 串流播放時的打斷功能")
-    print("="*40)
-
-    def interrupt_after_delay(delay, router):
-        time.sleep(delay)
-        print("\n*** [TEST] 發送停止信號! ***\n")
-        router.stop()
 
     tts_router.start_stream()
-    interrupt_thread = threading.Thread(
-        target=interrupt_after_delay, args=(5, tts_router))
-    llm_generator_interrupt = simulate_llm_stream(stream_text)
+    llm_generator = simulate_llm_stream()
+    tts_thread = threading.Thread(
+        target=tts_router.say_stream, args=(llm_generator,))
+    tts_thread.start()
+    print("TTS 播放執行緒已在背景啟動...")
 
-    interrupt_thread.start()
-    tts_router.say_stream(llm_generator_interrupt)
-    # 打斷後，流可能還在運行，我們需要手動停止它
-    tts_router.stop_stream()
+    print("主執行緒等待幾秒，讓語音播放一會兒...")
+    time.sleep(15)
+
+    print(">>> 現在呼叫 tts_router.duck() 來降低音量！")
+    tts_router.duck(-18)
+
+    time.sleep(7)
+
+    print(">>> 現在呼叫 tts_router.unduck() 來恢復音量！")
+    tts_router.unduck()
+
+    print("主執行緒等待 TTS 播放完畢...")
+    tts_thread.join()
+    print("TTS 播放執行緒已結束。")
 
     print("\n✅ 所有測試完成。")
