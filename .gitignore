@@ -1,0 +1,11 @@
+*.env
+*.mp3
+*.wav
+*.ipynb
+*.pyc
+*.onnx
+*.tflite
+*.json
+*.ipynb_checkpoints
+*.pth
+*.bin
