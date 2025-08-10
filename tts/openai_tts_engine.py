@@ -29,13 +29,13 @@ class OpenAITTSEngine(TTSEngineBase):
         self.stream_running = threading.Event()
 
         # Phase 1 options & debug
-        self.jitter_frames = int(kwargs.get("jitter_frames", 1))  # 建議 0~12
+        self.jitter_frames = int(kwargs.get("jitter_frames", 2))  # 建議 0~12
         self.debug = bool(kwargs.get("debug", True))
 
         # Phase 2 feature flag：真正串流（iter_bytes→切幀→入列）
         self.stream_frames = bool(kwargs.get("stream_frames", True))
         # 串流預載門檻（幀數）：只在「每段語句開頭」檢查一次
-        self.prebuffer_min_frames = int(kwargs.get("prebuffer_min_frames", 1))
+        self.prebuffer_min_frames = int(kwargs.get("prebuffer_min_frames", 2))
 
         # 是否強制「單講者」（預設關閉，避免干擾測試）
         self.enforce_single_speaker = bool(

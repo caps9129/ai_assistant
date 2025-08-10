@@ -21,11 +21,11 @@ class PerceptionPipeline:
         *,
         # VAD 事件
         on_speech_onset: Optional[Callable[[], None]
-                                  ] = None,      # 建議綁 router.duck
+                                  ] = None,   # 建議綁 router.duck
         # 建議綁 router.pause_output(flush=False)
         on_speech_commit: Optional[Callable[[], None]] = None,
-        on_speech_cancel: Optional[Callable[[], None]
-                                   ] = None,     # 建議綁 router.unduck
+        # 建議綁 router.unduck
+        on_speech_cancel: Optional[Callable[[], None]] = None,
 
         # ASR 決策分流
         # 綁 router.stop_current_utterance
@@ -36,11 +36,15 @@ class PerceptionPipeline:
         on_resume_flush: Optional[Callable[[], None]] = None,
 
         # 靈敏度參數
-        commit_min_ms: int = 300,            # 建議先拉高
-        onset_duck_delay_ms: int = 120,      # 連續語音滿這段才 duck
-        window_frames: int = 8,              # 平滑視窗 M
-        window_min_speech: int = 6,          # 至少 N 個 True 才算語音
-        vad_frame_ms: int = 30,              # 若要更細可改 10ms（可選）
+        commit_min_ms: int = 300,        # 建議先拉高
+        onset_duck_delay_ms: int = 120,  # 連續語音滿這段才 duck
+        window_frames: int = 8,          # 平滑視窗 M
+        window_min_speech: int = 6,      # 至少 N 個 True 才算語音
+        vad_frame_ms: int = 30,          # 若要更細可改 10ms（可選）
+
+        pre_roll_mode: str = "adaptive",     # "static" | "auto" | "adaptive"
+        pre_roll_ms: int = 120,          # pre_roll_mode="static" 時使用
+        pre_roll_alpha: float = 0.35,    # adaptive 的 EWMA 係數
     ):
         # 讀取設定
         config_path = Path(__file__).parent.parent / "config.json"
@@ -61,7 +65,9 @@ class PerceptionPipeline:
 
         # VAD 設定
         self.vad_engine = WebRTCVAD(
-            sample_rate=self.sample_rate, frame_duration_ms=int(vad_frame_ms), aggressiveness=3
+            sample_rate=self.sample_rate,
+            frame_duration_ms=int(vad_frame_ms),
+            aggressiveness=3
         )
         self.frame_ms = self.vad_engine.frame_duration_ms
 
@@ -83,6 +89,37 @@ class PerceptionPipeline:
         self.window_min_speech = max(1, int(window_min_speech))
         self._speech_window = deque(maxlen=self.window_frames)
 
+        # ★ Pre-roll（回補）設定
+        self.pre_roll_mode = (pre_roll_mode or "auto").lower()
+        if self.pre_roll_mode not in ("static", "auto", "adaptive"):
+            self.pre_roll_mode = "auto"
+
+        if self.pre_roll_mode == "static":
+            # 使用固定毫秒
+            self.pre_roll_ms = int(pre_roll_ms)
+            self.pre_roll_frames = max(
+                1, (self.pre_roll_ms + self.frame_ms - 1) // self.frame_ms)
+            self._preroll_guard_frames = 0
+            self._preroll_ewma = None
+        else:
+            # auto / adaptive: 由 N/M 推導 + 安全值
+            self.pre_roll_ms = None  # 以 frame 為準
+            self._preroll_guard_frames = max(
+                1, int(round(0.25 * self.window_frames)))  # ~25% 視窗當緩衝
+            base = self.window_min_speech
+            self.pre_roll_frames = base + self._preroll_guard_frames
+            # 給 adaptive 用的 EWMA
+            self._preroll_ewma = float(base)
+            self._preroll_alpha = float(pre_roll_alpha)
+        # 限制上下界（避免離譜）
+        self._preroll_min_frames = max(1, self.window_min_speech)
+        self._preroll_max_frames = max(
+            self._preroll_min_frames + 1, 3 * self.window_frames)
+
+        # 存「原始 VAD=真」的幀（bytes）
+        self._pre_roll = deque(maxlen=self.pre_roll_frames)
+        self._raw_streak = 0  # 連續 raw True 幀數
+
         # 內部佇列 / 執行緒
         self.audio_queue = queue.Queue()
         self.processing_thread = threading.Thread(
@@ -95,6 +132,15 @@ class PerceptionPipeline:
         self.status_lock = threading.Lock()
         self._is_processing = False
         self._is_paused = True
+
+        # 活動看門狗（供 main.py 重置 timeout 用）
+        self._last_vad_activity_ts: float = 0.0
+        self._activity_lock = threading.Lock()
+
+    # --- Watchdog getter（thread-safe）---
+    def last_activity_ts(self) -> float:
+        with self._activity_lock:
+            return self._last_vad_activity_ts
 
     @property
     def is_processing(self):
@@ -182,10 +228,11 @@ class PerceptionPipeline:
     # --------------------- VAD / FSM loop ---------------------
     def _process_loop(self):
         """
-        VAD + onset/commit/cancel + 平滑投票：
+        VAD + onset/commit/cancel + 平滑投票 + ★pre-roll 回補：
         - onset（延遲）：連續語音滿 onset_duck_delay_ms 才觸發 on_speech_onset（duck）
         - commit：連續語音滿 commit_min_ms 觸發 on_speech_commit（pause_output）
         - 未達門檻回靜音：on_speech_cancel（unduck，不送 ASR）
+        - ★ 在首次進入語音時，回補 pre-roll（避免吃掉第一個字）
         """
         in_speech = False
         committed = False
@@ -196,26 +243,41 @@ class PerceptionPipeline:
         audio_buffer = bytearray()
         silent_frames_count = 0
 
+        def _reset_state():
+            nonlocal in_speech, committed, speech_run_frames, onset_acc_frames, onset_duck_called, silent_frames_count
+            in_speech = False
+            committed = False
+            speech_run_frames = 0
+            onset_acc_frames = 0
+            onset_duck_called = False
+            silent_frames_count = 0
+            audio_buffer.clear()
+            self._speech_window.clear()
+            self._pre_roll.clear()
+            self._raw_streak = 0
+
         while self.is_running:
             try:
                 with self.status_lock:
                     if self._is_paused:
                         time.sleep(0.1)
-                        # reset
-                        in_speech = False
-                        committed = False
-                        speech_run_frames = 0
-                        onset_acc_frames = 0
-                        onset_duck_called = False
-                        audio_buffer.clear()
-                        silent_frames_count = 0
-                        self._speech_window.clear()
+                        _reset_state()
                         continue
 
                 audio_chunk = self.audio_queue.get(timeout=0.2)
                 frames = self.vad_engine.process_chunk(audio_chunk)
 
                 for raw_is_speech, frame_bytes in frames:
+                    # === 活動時間戳（原始偵測到語音就算活動）===
+                    if raw_is_speech:
+                        with self._activity_lock:
+                            self._last_vad_activity_ts = time.time()
+                        # ★ 先記到 pre-roll：只放「原始 VAD=真」的幀
+                        self._pre_roll.append(frame_bytes)
+                        self._raw_streak += 1
+                    else:
+                        self._raw_streak = 0
+
                     # ---- N-out-of-M 平滑 ----
                     self._speech_window.append(1 if raw_is_speech else 0)
                     smooth_speech = sum(
@@ -233,6 +295,30 @@ class PerceptionPipeline:
                             onset_duck_called = False
                             self._set_processing_status(True)
 
+                            # ★ 回補 pre-roll：把剛才的原始語音幀補回音框，避免吃掉第一個字
+                            restored = len(self._pre_roll)
+                            if restored > 0:
+                                audio_buffer.extend(b"".join(self._pre_roll))
+                                self._pre_roll.clear()
+                                print(
+                                    f"[Perception] Pre-roll recovered {restored} frames (~{restored * self.frame_ms} ms).")
+
+                                # 若為 adaptive，根據實際回補長度微調 pre-roll 容量
+                                if self.pre_roll_mode == "adaptive" and self._preroll_ewma is not None:
+                                    self._preroll_ewma = (
+                                        1.0 - self._preroll_alpha) * self._preroll_ewma + self._preroll_alpha * restored
+                                    target = int(
+                                        round(self._preroll_ewma)) + self._preroll_guard_frames
+                                    # 限制在合理範圍
+                                    target = max(self._preroll_min_frames, min(
+                                        target, self._preroll_max_frames))
+                                    if target != self._pre_roll.maxlen:
+                                        # 重新設定 deque 容量（下一輪生效）
+                                        self._pre_roll = deque(maxlen=target)
+                                        print(
+                                            f"[Perception] Adaptive pre-roll set to {target} frames (~{target * self.frame_ms} ms).")
+
+                        # 正常累積本幀
                         audio_buffer.extend(frame_bytes)
                         speech_run_frames += 1
                         onset_acc_frames += 1
@@ -278,14 +364,7 @@ class PerceptionPipeline:
                                         print(
                                             f"[Perception] on_speech_cancel error: {e}")
                                 self._set_processing_status(False)
-                                # reset
-                                in_speech = False
-                                committed = False
-                                speech_run_frames = 0
-                                onset_acc_frames = 0
-                                onset_duck_called = False
-                                audio_buffer.clear()
-                                silent_frames_count = 0
+                                _reset_state()
                                 continue
 
                             # 句尾靜音 → 送 ASR
@@ -295,14 +374,7 @@ class PerceptionPipeline:
                                     f"[Perception] VAD finalized a segment due to silence at {vad_end_time:.2f}, sending to ASR worker.")
                                 self.asr_queue.put(
                                     (audio_buffer.copy(), vad_end_time))
-                                # reset
-                                in_speech = False
-                                committed = False
-                                speech_run_frames = 0
-                                onset_acc_frames = 0
-                                onset_duck_called = False
-                                audio_buffer.clear()
-                                silent_frames_count = 0
+                                _reset_state()
 
             except queue.Empty:
                 if in_speech:
@@ -310,13 +382,7 @@ class PerceptionPipeline:
                     print(
                         f"[Perception] Finalizing segment due to inactivity at {vad_end_time:.2f}, sending to ASR worker.")
                     self.asr_queue.put((audio_buffer.copy(), vad_end_time))
-                    in_speech = False
-                    committed = False
-                    speech_run_frames = 0
-                    onset_acc_frames = 0
-                    onset_duck_called = False
-                    audio_buffer.clear()
-                    silent_frames_count = 0
+                    _reset_state()
                 continue
 
     # ----------------------- Public APIs -----------------------
@@ -329,11 +395,19 @@ class PerceptionPipeline:
             self.is_running = True
             self.processing_thread.start()
             self.asr_worker_thread.start()
+
+            # 換算目前 pre-roll 設定的毫秒，僅為展示
+            if self.pre_roll_mode == "static":
+                pr_ms = self.pre_roll_ms
+            else:
+                pr_ms = self.pre_roll_frames * self.frame_ms
+
             print(
                 f"✅ Perception Pipeline started. frame_ms={self.frame_ms}, "
                 f"window={self.window_min_speech}/{self.window_frames}, "
                 f"onset_delay_ms={self.onset_duck_delay_ms}, "
                 f"commit_min_ms={self.commit_min_ms}({self.commit_min_frames} frames), "
+                f"pre_roll_mode={self.pre_roll_mode}, pre_roll≈{pr_ms}ms({self.pre_roll_frames} frames), "
                 f"silence_ms≈{self.silence_frames_threshold * self.frame_ms}"
             )
 
