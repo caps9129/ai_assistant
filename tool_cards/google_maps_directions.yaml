@@ -1,0 +1,192 @@
+# tool_cards/google_maps_directions.yaml
+name: google_maps_directions
+version: 1.1
+provider: google
+domain: maps
+capability: navigate
+modalities: ["text"]
+locales_supported: ["en", "zh"]
+is_support: false
+
+one_line_desc:
+  en: "Get directions from an origin (or current location) to a destination, returning distance, travel time, and a route summary."
+  zh: "從起點（未提供則使用目前位置）到目的地取得路線，回傳距離、行車時間與路線摘要。"
+
+# === INPUTS (aligned to get_directions signature) ===
+args_hint: ["destination", "origin", "mode", "language"]
+
+args_schema:
+  destination:
+    type: string
+    required: true
+    desc:
+      en: "Destination address or place name."
+      zh: "目的地地址或地標名稱。"
+    examples: ["Valley Library", "PDX Airport", "1500 SW Jefferson Ave, Corvallis, OR"]
+
+  origin:
+    type: string
+    required: false
+    desc:
+      en: "Origin address or place name. If omitted, the user's current location is used."
+      zh: "起點地址或地標名稱；若省略，將使用使用者目前位置。"
+    examples: ["Kelley Engineering Center", "Corvallis OR"]
+
+  mode:
+    type: string
+    required: false
+    default: driving
+    enum: ["driving", "walking", "bicycling", "transit"]
+    desc:
+      en: "Travel mode."
+      zh: "交通模式。"
+
+  language:
+    type: string
+    required: false
+    default: en
+    desc:
+      en: 'Response language (e.g., "en", "zh-TW").'
+      zh: '回傳語言（如 "en"、"zh-TW"）。'
+    examples: ["en", "zh-TW"]
+
+# === VALIDATION (only for these 4 inputs) ===
+validation_rules:
+  - required: ["destination"]
+    message:
+      en: "Destination is required."
+      zh: "必須提供目的地。"
+
+  - field: "mode"
+    enum: ["driving", "walking", "bicycling", "transit"]
+    message:
+      en: "Mode must be one of: driving, walking, bicycling, transit."
+      zh: "交通模式必須為 driving、walking、bicycling、transit 其中之一。"
+
+  - note_defaults: true
+    message:
+      en: "If origin is omitted, the user's current location is used. Departure time is set to now."
+      zh: "若未提供起點，將使用使用者目前位置。出發時間預設為現在。"
+
+# === OUTPUTS (aligned to the function's return) ===
+output_fields:
+  - origin                 # resolved start address (string)
+  - destination            # resolved end address (string)
+  - distance               # human-readable distance text (e.g., "5.3 mi")
+  - duration_with_traffic  # human-readable duration text (e.g., "18 mins")
+  - summary                # route summary (string)
+  - error                  # present only on failure (string)
+  
+positive_queries:
+  - en: "How long to walk from Kelley to Valley Library?"
+  - zh: "從 Kelley 走到 Valley Library 要多久？"
+  - en: "Driving route from OSU to Portland avoiding tolls."
+  - zh: "從 OSU 開車到 Portland，避開收費道路。"
+  - en: "Bike directions to the nearest WinCo."
+  - zh: "騎腳踏車去最近的 WinCo 要怎麼走？"
+  - en: "Transit route to PDX arriving by 7:30 AM."
+  - zh: "搭大眾運輸在早上 7:30 前到 PDX 的路線。"
+  - en: "Give me 3 alternatives for driving right now."
+  - zh: "現在開車，幫我提供 3 條替代路線。"
+  - en: "Driving directions from Corvallis to Eugene via OR-99W."
+  - zh: "從 Corvallis 到 Eugene 走 OR-99W 的開車路線。"
+  - en: "Leave at 5 PM and drive to downtown Portland—what's the ETA with traffic?"
+  - zh: "下午 5 點出發開車到 Portland 市中心，考慮路況的抵達時間是多少？"
+  - en: "Walking route from Valley Library to KEC avoiding indoor paths."
+  - zh: "從 Valley Library 走到 KEC，避開室內通道的步行路線。"
+  - en: "Route from OSU to Costco, then to PDX, with Costco as a waypoint."
+  - zh: "從 OSU 先到 Costco 再到 PDX，將 Costco 設為中途停靠點。"
+  - en: "Optimize waypoints for these stops: Home, Target, Airport."
+  - zh: "對『家、Target、機場』這些中途點做最佳化排序。"
+  - en: "How many minutes to bike from 1500 SW Jefferson Ave to Valley Library?"
+  - zh: "從 1500 SW Jefferson Ave 騎腳踏車到 Valley Library 需要幾分鐘？"
+  - en: "Transit to OMSI with fewer transfers."
+  - zh: "搭大眾運輸去 OMSI，偏好少轉乘。"
+  - en: "Bus and rail only to downtown Seattle; arrive by 9 AM."
+  - zh: "只搭公車與火車前往西雅圖市中心，上午 9 點前抵達。"
+  - en: "Driving directions in Chinese, avoid highways."
+  - zh: "請用中文提供開車路線，並避開高速公路。"
+  - en: "Walking distance in miles from Kelley to Reser Stadium."
+  - zh: "從 Kelley 到 Reser Stadium 的步行距離（英里）。"
+  - en: "Navigate to the nearest gas station."
+  - zh: "導航到最近的加油站。"
+  - en: "Take me to the closest coffee shop."
+  - zh: "帶我去最近的咖啡店。"
+  - en: "How do I get to an open pharmacy near me right now?"
+  - zh: "現在有營業的藥局，怎麼走？"
+  - en: "Get me directions to the best-rated sushi place nearby."
+  - zh: "導航到附近評價最高的壽司店。"
+  - en: "Drive to the cheapest supermarket around here."
+  - zh: "帶我去這附近最便宜的超市。"
+  - en: "Take me to a pizza place within 2 km."
+  - zh: "導航到 2 公里內的披薩店。"
+  - en: "Route to a ramen shop near campus."
+  - zh: "走到校園附近的拉麵店怎麼走？"
+  - en: "Guide me to an EV charger near me."
+  - zh: "帶我去附近的電動車充電站"
+
+negative_queries:
+  - en: "Best coffee shops near me."                  # -> Maps Search
+  - zh: "附近評價好的咖啡店有哪些？"
+  - en: "What supermarkets are around Albany?"        # -> Maps Search
+  - zh: "Albany 附近有什麼超市？"
+  - en: "Restaurants open now near campus."           # -> Maps Search
+  - zh: "學校附近現在有開的餐廳。"
+  - en: "What's the phone number for Starbucks on 9th St?"   # -> Search + Place Details
+  - zh: "9th St 那間 Starbucks 的電話是多少？"
+  - en: "What's the address of Valley Library?"       # -> Search + Place Details
+  - zh: "Valley Library 的地址是什麼？"
+  - en: "Show reviews for Thai restaurants nearby."   # -> Search + Place Details
+  - zh: "看看附近泰式餐廳的評價。"
+  - en: "Show photos of Reser Stadium."               # -> Place Photos/Details
+  - zh: "看一下 Reser Stadium 的照片。"
+  - en: "Book a table at McMenamins for 7 PM."        # -> Reservations (external)
+  - zh: "幫我在 McMenamins 訂晚上 7 點的位置。"
+  - en: "Is there parking at the museum?"             # -> Place info (Details)
+  - zh: "博物館有沒有停車場？"
+  - en: "How expensive is Local Boyz?"                # -> Place price/details
+  - zh: "Local Boyz 的價位大概多少？"
+  - en: "What time does WinCo close today?"           # -> Opening hours (Details)
+  - zh: "WinCo 今天幾點打烊？"
+  - en: "Add a to-do to buy milk."                    # -> Tasks
+  - zh: "新增待辦：買牛奶。"
+  - en: "What's the weather this Friday?"             # -> Weather
+  - zh: "這個星期五的天氣如何？"
+  - en: "Set a 10-minute timer."                      # -> Timer
+  - zh: "設定 10 分鐘計時器。"
+  - en: "Translate '你好' to English."                 # -> Translate
+  - zh: "把「你好」翻成英文。"
+
+latency_ms_estimate: 600-1200
+
+auth:
+  type: api_key
+  env_vars: ["GOOGLE_MAPS_API_KEY"]
+  runtime: server
+  inject:
+    where: query
+    name: key
+    from_env: GOOGLE_MAPS_API_KEY
+
+supporting_tools:
+  - name: google_maps_geocode_address
+    usage:
+      en: "Disambiguate place names or fetch place_id by keyword/address before routing."
+      zh: "在規劃路線前，用關鍵字/地址消歧並取得 place_id。"
+  - name: google_maps_get_place_details
+    usage:
+      en: "Enrich with formatted_address/phone/website/opening_hours after resolving place_id."
+      zh: "在取得 place_id 後補齊正式地址/電話/網站/營業時間。"
+  - name: google_maps_geocode_address
+    usage:
+      en: "Fallback forward/reverse geocoding when text addresses fail to resolve."
+      zh: "文字地址解析失敗時，作為正/反向地理編碼的後備方案。"
+
+runtime_binding:
+  module: tools/google_maps.py   # ← 如你的檔名不同，請改成實際路徑
+  function: google_maps_directions
+
+
+risk:
+  - en: "Routes and ETAs may change due to traffic; verify before critical travel."
+  - zh: "路況會影響路線與時間，重要行程前請再確認。"

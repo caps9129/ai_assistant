@@ -1,0 +1,193 @@
+name: google_calendar_create_event
+version: 1.1
+provider: google
+domain: calendar
+capability: create_event
+modalities: ["text"]
+locales_supported: ["en", "zh"]
+is_support: false
+
+one_line_desc:
+  en: "Create a simple Google Calendar event (all-day or 1-hour timed) in the primary calendar."
+  zh: "在主要行事曆建立簡單事件（整天或 1 小時的定時事件）。"
+
+# === INPUTS (strictly aligned to your function) ===
+args_hint: ["title", "year", "month", "day", "time", "location"]
+
+args_schema:
+  title:
+    type: string
+    required: true
+    desc:
+      en: "Event title. If missing, callers should ask the user to provide it."
+      zh: "事件標題。若缺少，呼叫端應請使用者補充。"
+    examples: ["Project kickoff", "Midterm review", "團隊午餐"]
+
+  year:
+    type: integer
+    required: false
+    desc:
+      en: "Year of the event date. If omitted, defaults to today's year in the user's timezone."
+      zh: "事件年份；未提供則以使用者時區的今天年份為預設值。"
+    examples: [2025]
+
+  month:
+    type: integer
+    required: false
+    range: [1, 12]
+    desc:
+      en: "Month of the event date (1–12). If omitted, defaults to today's month."
+      zh: "事件月份（1–12）；未提供則以今天月份為預設值。"
+    examples: [8]
+
+  day:
+    type: integer
+    required: false
+    range: [1, 31]
+    desc:
+      en: "Day of the event date (1–31). If omitted, defaults to today's day."
+      zh: "事件日期（1–31）；未提供則以今天日期為預設值。"
+    examples: [20]
+
+  time:
+    type: string
+    required: false
+    desc:
+      en: "\"HH:MM\" 24-hour start time. If provided, the event lasts 1 hour; if omitted or null, an all-day event is created."
+      zh: "24 小時制 \"HH:MM\" 起始時間；提供則預設長度為 1 小時；若省略或為 null，則建立整天事件。"
+    examples: ["15:00", "09:30", null]
+
+  location:
+    type: string
+    required: false
+    default: ""
+    desc:
+      en: "Optional physical location or address (free text). Empty string allowed."
+      zh: "可選實體地點或地址（自由文字）。可為空字串。"
+    examples: ["Kelley 2001", "Samaritan Clinic", ""]
+
+# === VALIDATION (only for the 6 inputs above) ===
+validation_rules:
+  - required: ["title"]
+    message:
+      en: "Title is required."
+      zh: "必須提供事件標題。"
+
+  - field: "month"
+    allow_null: true
+    range: [1, 12]
+    message:
+      en: "Month must be between 1 and 12."
+      zh: "月份必須介於 1 到 12。"
+
+  - field: "day"
+    allow_null: true
+    range: [1, 31]
+    message:
+      en: "Day must be between 1 and 31."
+      zh: "日期必須介於 1 到 31。"
+
+  - field: "time"
+    allow_null: true
+    regex: "^([01]\\d|2[0-3]):[0-5]\\d$"
+    message:
+      en: "Time must be in 24-hour \"HH:MM\" format (e.g., 09:30, 15:00), or null for all-day."
+      zh: "時間必須為 24 小時制 \"HH:MM\"（如 09:30、15:00），或為 null 以建立整天事件。"
+
+  - note_defaults: true
+    message:
+      en: "If year/month/day are omitted, they default to today's date in the user's timezone. If time is omitted, an all-day event is created."
+      zh: "若未提供 year/month/day，將以使用者時區的今天日期為預設；若未提供 time，將建立整天事件。"
+
+output_fields:
+  - status     # "success" or "error"
+  - title      # returned only on success
+  - message    # error detail when status="error"
+
+
+positive_queries:
+  - en: "Create a meeting tomorrow 3–4pm with Alice and Bob at Kelley 2001, send invites."
+  - zh: "幫我建立明天 3–4pm 的會議，地點 Kelley 2001，邀請 Alice、Bob 並寄出邀請。"
+  - en: "Standup every Monday 9:00–9:15 AM, add a Meet link."
+  - zh: "每週一早上 9:00–9:15 的 standup，附上 Meet 連結。"
+  - en: "All-day reminder on Friday: Submit assignment."
+  - zh: "本週五整天提醒：繳交作業。"
+  - en: "Schedule 'Project sync' next Tue 2–3 PM (PDT), invite carol@example.com and dave@example.com, reminder 10 min."
+  - zh: "下週二下午 2–3 點建立「Project sync」，時區 PDT，邀請 carol@example.com、dave@example.com，提醒 10 分鐘。"
+  - en: "Create a recurring event 'Gym' every Wed and Fri 7–8 AM, no email updates."
+  - zh: "建立「健身」每週三與週五 7–8 AM 的重複事件，不寄出郵件通知。"
+  - en: "Block off vacation from Aug 21–25, mark as out of office."
+  - zh: "8/21–8/25 請假封鎖行程，狀態設為外出（OOO）。"
+  - en: "Office hours on March 5 from 1:30–3:00 PM at KEC 1001."
+  - zh: "3/5 下午 1:30–3:00 在 KEC 1001 建立 office hours。"
+  - en: "Create 'Midterm review' on 2025-10-12 14:00–15:30, add a Meet link and description."
+  - zh: "2025-10-12 14:00–15:30 建立「期中複習」，加上 Meet 連結與說明。"
+  - en: "Private event 'Doctor appointment' next Thursday 10–11 AM at Samaritan Clinic."
+  - zh: "下週四 10–11 AM 建立「看診」私密事件，地點 Samaritan Clinic。"
+  - en: "Today at 5 PM create a 30-minute meeting with team@company.com, timezone America/Los_Angeles."
+  - zh: "今天 5 PM 和 team@company.com 開 30 分鐘會議，時區 America/Los_Angeles。"
+  - en: "Add 'Final presentation' on May 30, 9–11 AM, location MAGRUDER 100, set color to blue."
+  - zh: "5/30 9–11 AM 建立「期末簡報」，地點 MAGRUDER 100，顏色設為藍色。"
+  - en: "Create '1:1 with Alex' every other Tuesday 4–4:30 PM, send updates."
+  - zh: "每隔一週週二 4–4:30 PM 建立「與 Alex 1:1」，寄出更新。"
+  - en: "Schedule 'Flight to PDX' on 2025-09-01 06:00–08:00, visibility private; add confirmation code in description."
+  - zh: "2025-09-01 06:00–08:00 建立「飛往 PDX」，可見性設為 private，說明加上訂位代碼。"
+  - en: "Create 'Study group' Sunday 7–9 PM with five attendees, reminder popup 30 minutes."
+  - zh: "週日 7–9 PM 建立「讀書會」，邀請五位參加者，提醒設 30 分鐘彈出通知。"
+  - en: "Team lunch next Friday 12:15–1:15 PM at Cafe Yumm, note 'order ahead'."
+  - zh: "下週五 12:15–13:15 建立「團隊午餐」，地點 Cafe Yumm，備註「提早點餐」。"
+
+negative_queries:
+  - en: "Add a to-do: buy milk."            # should go to Tasks
+  - zh: "新增待辦：買牛奶。"                     # 應走 Tasks
+  - en: "Mark 'Submit report' as completed in Tasks."
+  - zh: "把『提交報告』在 Tasks 標記為已完成。"
+  - en: "Find coffee shops near me."        # should go to Maps Search
+  - zh: "找我附近的咖啡店。"                     # 應走 Maps Search
+  - en: "What supermarkets are around Albany?"
+  - zh: "Albany 附近有什麼超市？"
+  - en: "Navigate to 1500 SW Jefferson Ave."  # should go to Directions
+  - zh: "導航到 1500 SW Jefferson Ave。"         # 應走 Directions
+  - en: "How long to walk from Kelley to Valley Library?"
+  - zh: "從 Kelley 走到 Valley Library 要多久？"
+  - en: "What's the weather this Friday?"
+  - zh: "這個星期五的天氣如何？"
+  - en: "Set a 10-minute timer."
+  - zh: "設定 10 分鐘計時器。"
+  - en: "Set an alarm for 7 AM."
+  - zh: "設 7 點的鬧鐘。"
+  - en: "Send an email to Bob."
+  - zh: "寄一封 email 給 Bob。"
+  - en: "Create a new Google Doc."
+  - zh: "建立一份 Google 文件。"
+  - en: "Translate '你好' to English."
+  - zh: "把「你好」翻成英文。"
+  - en: "Save Alice's phone number to contacts."
+  - zh: "把 Alice 的電話存到通訊錄。"
+  - en: "Play some jazz on Spotify."
+  - zh: "在 Spotify 播放一些爵士樂。"
+  - en: "Add a note in Google Keep: shopping list."
+  - zh: "在 Google Keep 新增備忘：購物清單。"
+
+latency_ms_estimate: 400-900
+
+auth:
+  type: oauth2
+  oauth_provider: google
+  scopes:
+    - https://www.googleapis.com/auth/calendar.events
+  env_vars:
+    - GOOGLE_OAUTH_CLIENT_ID
+    - GOOGLE_OAUTH_CLIENT_SECRET
+    - GOOGLE_OAUTH_REDIRECT_URI
+  managed_by: code
+  runtime: server
+  user_grant_required: true
+
+runtime_binding:
+  module: tools/google_calendar.py   # ← 如你的檔名不同，請改成實際路徑
+  function: google_calendar_create_event
+
+risk:
+  - en: "Defaults for missing date parts may create events on the wrong day; confirm relative dates (e.g., 'this Friday') in the user's timezone."
+  - zh: "日期缺省可能導致建立在非預期日期；請以使用者時區確認相對日期（如「本週五」）。"

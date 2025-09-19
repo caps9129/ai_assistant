@@ -30,6 +30,7 @@ MODELS_DIR = PROJECT_ROOT / "models"
 # WAKEWORD_MODEL_PATH = MODELS_DIR / "wakeword" / "hey_jarvis.onnx"
 
 MEMORY_LOG_DIR = PROJECT_ROOT / "memory_logs"
+QUERY_ROUTER_CONFIG = "embeddings/config.json"
 
 
 class Language(Enum):

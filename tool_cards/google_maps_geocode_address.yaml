@@ -1,0 +1,90 @@
+name: google_maps_geocode_address
+version: 1.0
+provider: google
+domain: maps
+capability: geocode
+modalities: ["text"]
+locales_supported: ["en", "zh"]
+is_support: true
+
+display_name:
+  en: "Maps: Geocode Address"
+  zh: "地圖：地址轉座標"
+
+aliases:
+  en: ["geocode", "geocode address", "address to coordinates", "resolve address"]
+  zh: ["地理編碼", "地址轉座標", "地址解析"]
+
+one_line_desc:
+  en: Convert a human-readable address or landmark name into geographic coordinates.
+  zh: 將可讀的地址或地標名稱轉換為經緯度座標。
+
+args_hint: ["address", "language"]
+
+args_schema:
+  address:
+    type: string
+    required: true
+    desc:
+      en: Full address or landmark name to geocode.
+      zh: 要進行地理編碼的完整地址或地標名稱。
+    examples:
+      - "Kelley Engineering Center, Corvallis, OR"
+      - "1500 SW Jefferson Ave, Corvallis"
+      - "Valley Library, OSU"
+  language:
+    type: string
+    required: false
+    default: en
+    desc:
+      en: BCP-47 language tag for results (e.g., "en", "zh-TW").
+      zh: 結果語言（BCP-47，如 "en"、"zh-TW"）。
+
+validation_rules:
+  - if_present: ["language"]
+    bcp47: true
+    message:
+      en: "Language should be a valid BCP-47 tag, e.g., 'en' or 'zh-TW'."
+      zh: "language 應為有效的 BCP-47 標籤，例如 'en' 或 'zh-TW'。"
+  - required_nonempty: ["address"]
+    message:
+      en: "Address must be provided."
+      zh: "必須提供 address。"
+
+output_fields:
+  - formatted_address        # 標準化後的正式地址
+  - location                 # 物件 {lat, lng}
+
+# ignore
+positive_queries:
+  - en: "Convert 'Kelley Engineering Center, Corvallis' to coordinates."
+  - zh: "把『Kelley Engineering Center, Corvallis』轉成經緯度。"
+  - en: "Geocode 'Valley Library, Oregon State University' (Chinese results)."
+  - zh: "地理編碼『奧勒岡州立大學 Valley Library』，結果用中文。"
+  - en: "Turn '1500 SW Jefferson Ave, Corvallis' into lat/lng."
+  - zh: "將『1500 SW Jefferson Ave, Corvallis』轉為緯經度座標。"
+
+negative_queries:
+  - en: "Best coffee shops near me."              # → use search_places
+  - zh: "附近評價好的咖啡店有哪些？"
+  - en: "How long to walk from Kelley to Valley Library?"  # → use directions
+  - zh: "從 Kelley 走到 Valley Library 要多久？"
+
+latency_ms_estimate: 200-600
+
+auth:
+  type: api_key
+  env_vars: ["GOOGLE_MAPS_API_KEY"]   # 啟動時檢查需存在的環境變數
+  runtime: server                     # 只在伺服端使用，不下發到 client
+  inject:
+    where: query                      # 以查詢參數方式注入
+    name: key                         # 參數名為 ?key=...
+    from_env: GOOGLE_MAPS_API_KEY     # 取自環境變數
+
+runtime_binding:
+  module: tools/google_maps.py   # ← 請改成你實際的模組路徑
+  function: google_maps_geocode_address
+
+risk:
+  - en: "Ensure addresses do not expose private locations without consent."
+  - zh: "避免在未經同意下暴露私人地址資訊。"

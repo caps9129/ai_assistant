@@ -32,10 +32,21 @@ class AgentRegistry:
         Private method to define and register all agent configurations.
         """
         self._configs = {
-            "MainRouter": AgentConfig(
-                name="MainRouter",
-                model="gpt-4o-mini",  # Using a more standard model name
-                prompt_name="main_router"
+            "MainRouterAgent": AgentConfig(
+                name="MainRouterAgent",
+                model="gpt-4.1",
+                prompt_name="main_router",
+                temperature=0.0
+            ),
+            "ComplexPlannerAgent": AgentConfig(
+                name="ComplexPlannerAgent",
+                model="gpt-4.1",
+                prompt_name="complex_planner"
+            ),
+            "SimplePlannerAgent": AgentConfig(
+                name="SimplePlannerAgent",
+                model="gpt-4.1",
+                prompt_name="simple_planner"
             ),
             # --- Google Services Agents ---
             "GoogleServicesAgent_Router": AgentConfig(
@@ -60,6 +71,7 @@ class AgentRegistry:
             ),
 
             # --- Other Agents ---
+
             "WeatherAgent": AgentConfig(
                 name="WeatherAgent",
                 model="gpt-3.5-turbo",
@@ -69,7 +81,7 @@ class AgentRegistry:
                 name="GeneralChatAgent",
                 model="gpt-4o",
                 prompt_name="general_chat_agent",
-                temperature="0.7"
+                temperature=0.7
             )
         }
         print(

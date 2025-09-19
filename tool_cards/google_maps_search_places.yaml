@@ -1,0 +1,219 @@
+# tool_cards/google_maps_search_places.yaml
+name: google_maps_search_places
+version: 1.2
+provider: google
+domain: maps
+capability: search
+modalities: ["text"]
+locales_supported: ["en", "zh"]
+is_support: false
+
+display_name:
+  en: "Maps: Nearby Search"
+  zh: "地圖：附近搜尋"
+
+aliases:
+  en: ["nearby", "places near me", "find around me", "open now", "cheap", "best rated"]
+  zh: ["附近", "我附近", "找周邊", "現在營業", "便宜", "高評分"]
+
+one_line_desc:
+  en: Search for nearby places around the user's current location (cafes, gyms, supermarkets, etc.) with filters.
+  zh: 以「目前位置」為中心搜尋附近地點（咖啡店、健身房、超市等），支援多種篩選。
+
+args_hint:
+  ["query", "min_rating", "min_total_ratings", "max_price_level",
+   "open_now", "rank_by", "radius_km", "max_results", "language"]
+
+args_schema:
+  query:
+    type: string
+    required: true
+    desc:
+      en: Keyword or category to search near the current location.
+      zh: 以目前位置為中心搜尋的關鍵字或類別。
+    examples: ["coffee", "boba", "gym", "pharmacy", "ramen", "park", "museum"]
+
+  min_rating:
+    type: number
+    required: false
+    default: 0.0
+    range: [0, 5]
+    desc:
+      en: Minimum average rating to include.
+      zh: 最低平均評分門檻。
+
+  min_total_ratings:
+    type: integer
+    required: false
+    default: 0
+    min: 0
+    desc:
+      en: Minimum number of user ratings required.
+      zh: 最低評價數量門檻。
+
+  max_price_level:
+    type: integer
+    required: false
+    range: [0, 4]
+    desc:
+      en: Maximum price level (0–4).
+      zh: 最高價位等級（0–4）。
+
+  open_now:
+    type: boolean
+    required: false
+    default: false
+    desc:
+      en: Return only places currently open.
+      zh: 只回傳目前營業中的地點。
+
+  rank_by:
+    type: string
+    required: false
+    default: prominence
+    enum: ["prominence", "distance"]
+    desc:
+      en: Sort behavior; when set to "distance", radius_km must be omitted.
+      zh: 排序方式；若為 "distance" 則不可同時設定 radius_km。
+
+  radius_km:
+    type: number
+    required: false
+    default: 5.0
+    min: 0.05
+    max: 50
+    desc:
+      en: Search radius in kilometers (omit when rank_by=distance).
+      zh: 搜尋半徑（公里；若 rank_by=distance 請省略）。
+
+  max_results:
+    type: integer
+    required: false
+    default: 5
+    min: 1
+    max: 50
+    desc:
+      en: Maximum number of results to return after filtering/sorting.
+      zh: 篩選排序後的最大回傳筆數。
+
+  language:
+    type: string
+    required: false
+    default: en
+    desc:
+      en: Response language (BCP-47), e.g., "en", "zh-TW".
+      zh: 回傳語言（BCP-47，如 "en"、"zh-TW"）。
+
+validation_rules:
+  - if: { rank_by: "distance" }
+    must_not_have: ["radius_km"]
+    message:
+      en: "When rank_by=distance, omit radius_km."
+      zh: "使用 rank_by=distance 時不可同時設定 radius_km。"
+
+output_fields:
+  - name
+  - rating
+  - total_ratings
+  - price_level
+  - address         # vicinity
+  - is_open_now
+
+positive_queries:
+  - en: "Find highly rated coffee shops near me (rating ≥ 4.5)."
+  - zh: "找我附近評分 4.5 以上的咖啡店。"
+  - en: "Any gyms around me within 2 km?"
+  - zh: "我附近 2 公里內有什麼健身房？"
+  - en: "Restaurants open now near my location."
+  - zh: "我這附近現在有開的餐廳。"
+  - en: "Cheaper lunch spots near me; rank by distance."
+  - zh: "我附近便宜的午餐店，依距離排序。"
+  - en: "Best boba nearby with at least 100 reviews."
+  - zh: "附近評價數至少 100 的手搖飲店。"
+  - en: "Closest gas station open now."
+  - zh: "最近而且現在有營業的加油站。"
+  - en: "Pharmacies within 3 km that are open now."
+  - zh: "3 公里內現在有開的藥局。"
+  - en: "Late-night ramen near me."
+  - zh: "我附近有沒有宵夜時段的拉麵？"
+  - en: "Family-friendly parks around my area."
+  - zh: "我附近適合親子的公園。"
+  - en: "Dog-friendly cafes near me."
+  - zh: "附近有沒有對寵物友善的咖啡店？"
+  - en: "Museums within 5 km of my location."
+  - zh: "距離我 5 公里內的博物館。"
+  - en: "Vegetarian restaurants near me."
+  - zh: "我附近的素食餐廳。"
+  - en: "Supermarkets with price level up to 1 near me."
+  - zh: "我附近價位等級不超過 1 的超市。"
+  - en: "Highest-rated bakery nearby with 500+ reviews."
+  - zh: "附近評價數 500 以上、評分最高的麵包店。"
+  - en: "Find the highest-rated pizza place nearby and take me there."
+  - zh: "找附近評價最高的披薩店，帶我去。"
+  - en: "Locate a gas station near me and guide me to it."
+  - zh: "找最近的加油站，導航過去。"
+  - en: "Find an open pharmacy around me and get me directions."
+  - zh: "找目前有營業的藥局，幫我規劃路線。"
+  - en: "Show a cheap lunch spot close by and navigate me there."
+  - zh: "找附近便宜的午餐店，帶我前往。"
+  - en: "Find a coffee shop within 1 km and take me there."
+  - zh: "找 1 公里內的咖啡店，開始導航。"
+  - en: "Pick the nearest ramen place and start directions."
+  - zh: "挑最近的拉麵店並開始路線。"
+  - en: "Find a supermarket near campus and guide me."
+  - zh: "找校園附近的超市，帶我去。"
+  - en: "Find any EV charger around here and route me to the closest one."
+  - zh: "找附近的電動車充電站，導航到最近的那個。"
+
+negative_queries:
+  - en: "Navigate to 1500 SW Jefferson Ave."        # go to Directions
+  - zh: "導航到 1500 SW Jefferson Ave。"
+  - en: "How long to walk from Kelley to Valley Library?"   # Directions
+  - zh: "從 Kelley 走到 Valley Library 要多久？"
+  - en: "Route to PDX arriving by 7:30 AM."         # Directions
+  - zh: "規劃在早上 7:30 前抵達 PDX 的路線。"
+  - en: "What's the address of Valley Library?"     # Place details
+  - zh: "Valley Library 的地址是什麼？"
+  - en: "What's the phone number for Starbucks on 9th St?"  # Place details
+  - zh: "9th St 那間 Starbucks 的電話是多少？"
+  - en: "What time does WinCo close today?"         # Place details (hours)
+  - zh: "WinCo 今天幾點打烊？"
+  - en: "Show photos of Reser Stadium."             # Place photos/details
+  - zh: "看一下 Reser Stadium 的照片。"
+  - en: "Book a table at McMenamins for 7 PM."      # Reservations
+  - zh: "幫我在 McMenamins 訂晚上 7 點的位置。"
+  - en: "Create a meeting tomorrow 3–4 PM."         # Calendar
+  - zh: "安排明天 3–4 點的會議。"
+  - en: "Add a to-do: buy milk."                    # Tasks
+  - zh: "新增待辦：買牛奶。"
+  - en: "What's the weather this Friday?"           # Weather
+  - zh: "這個星期五的天氣如何？"
+
+latency_ms_estimate: 400-900
+
+auth:
+  type: api_key
+  env_vars: ["GOOGLE_MAPS_API_KEY"]   # 啟動時檢查需存在的環境變數
+  runtime: server                     # 只在伺服端使用，不下發到 client
+  inject:
+    where: query                      # 以查詢參數方式注入
+    name: key                         # 參數名為 ?key=...
+    from_env: GOOGLE_MAPS_API_KEY
+
+supporting_tools:
+  - name: google_maps_get_place_details
+    usage:
+      en: "After selecting a candidate, fetch formatted address/phone/website/opening hours."
+      zh: "選定候選後，補齊正式地址／電話／官網／營業時間。"
+  - name: google_maps_geocode_address
+    usage:
+      en: "Fallback geocoding or reverse geocoding when needed by downstream tasks."
+      zh: "在後續任務需要時，作為正／反向地理編碼後備。"
+
+runtime_binding:
+  module: tools/google_maps.py
+  function: google_maps_search_places
+
+risk:
+  - en: "Location privacy; avoid exposing precise coordinates unless necessary."
+  - zh: "注意隱私；非必要不要暴露精確座標。"

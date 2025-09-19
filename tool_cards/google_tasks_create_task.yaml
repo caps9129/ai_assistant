@@ -1,0 +1,189 @@
+name: google_tasks_create_task
+version: 1.1
+provider: google
+domain: tasks
+capability: create_task
+modalities: ["text"]
+locales_supported: ["en", "zh"]
+is_support: false
+
+one_line_desc:
+  en: "Create a task in the user's default Google Tasks list with an optional due date/time."
+  zh: "在使用者的預設 Google Tasks 清單建立任務，可選擇設定到期日期/時間。"
+
+# === INPUTS (strictly aligned to your function) ===
+args_hint: ["title", "year", "month", "day", "time"]
+
+args_schema:
+  title:
+    type: string
+    required: true
+    desc:
+      en: "Task title. If missing, caller should ask the user to provide it."
+      zh: "任務標題。若缺少，呼叫端應請使用者補充。"
+    examples: ["Submit assignment", "Buy milk", "Prepare slides"]
+
+  year:
+    type: integer
+    required: false
+    desc:
+      en: "Due date year. If any date part is missing, no due date will be set."
+      zh: "到期年的年份。若日期任一部分缺漏，則不設定到期日。"
+    examples: [2025]
+
+  month:
+    type: integer
+    required: false
+    range: [1, 12]
+    desc:
+      en: "Due date month (1–12). Requires year and day to form a due date."
+      zh: "到期月（1–12）。需與年份與日期同時提供才會設定到期日。"
+    examples: [8]
+
+  day:
+    type: integer
+    required: false
+    range: [1, 31]
+    desc:
+      en: "Due date day (1–31). Requires year and month to form a due date."
+      zh: "到期日（1–31）。需與年份與月份同時提供才會設定到期日。"
+    examples: [22]
+
+  time:
+    type: string
+    required: false
+    desc:
+      en: "\"HH:MM\" 24-hour due time (optional). Only used if year+month+day are also provided. If omitted or null, an all-day task is created."
+      zh: "24 小時制 \"HH:MM\" 到期時間（可選）。僅在同時提供年份、月份與日期時生效。未提供或為 null 則視為整天任務。"
+    examples: ["17:00", "09:30", null]
+
+# === VALIDATION (aligned to the simplified inputs) ===
+validation_rules:
+  - required: ["title"]
+    message:
+      en: "Title is required."
+      zh: "必須提供任務標題。"
+
+  - field: "month"
+    allow_null: true
+    range: [1, 12]
+    message:
+      en: "Month must be between 1 and 12."
+      zh: "月份必須介於 1 到 12。"
+
+  - field: "day"
+    allow_null: true
+    range: [1, 31]
+    message:
+      en: "Day must be between 1 and 31."
+      zh: "日期必須介於 1 到 31。"
+
+  - if_any_of_present: ["year", "month", "day"]
+    must_have: ["year", "month", "day"]
+    message:
+      en: "Setting a due date requires year, month, and day together."
+      zh: "若要設定到期日，需同時提供年份、月份與日期。"
+
+  - field: "time"
+    allow_null: true
+    regex: "^([01]\\d|2[0-3]):[0-5]\\d$"
+    message:
+      en: "Time must be 24-hour \"HH:MM\" (e.g., 09:30, 17:00), or null for all-day."
+      zh: "時間必須為 24 小時制 \"HH:MM\"（如 09:30、17:00），或為 null 以建立整天任務。"
+
+  - if_present: ["time"]
+    must_have: ["year", "month", "day"]
+    message:
+      en: "Due time requires a full date (year, month, day); otherwise it will be ignored."
+      zh: "要指定到期時間需提供完整日期（年、月、日）；否則時間將被忽略。"
+
+  - note_defaults: true
+    message:
+      en: "If no full date is provided, the task will be created without a due date. If time is omitted, the due is set to 00:00Z (all-day) for the given date."
+      zh: "若未提供完整日期，將建立無到期日的任務；若未提供時間，指定日期的到期時間將設為 00:00Z（整天）。"
+
+# === OUTPUTS (aligned to your function's returns) ===
+output_fields:
+  - status    # "success" or "error"
+  - title     # returned on success
+  - message   # error detail when status="error"
+
+positive_queries:
+  - en: "Add a to-do: Submit assignment by Friday 5 PM."
+  - zh: "新增待辦：週五下午 5 點前繳交作業。"
+  - en: "Create a subtask under 'Project Alpha' called 'Prepare slides'."
+  - zh: "在『Project Alpha』底下新增子任務：準備簡報。"
+  - en: "Add 'Buy milk' to my default list with a note: 2% milk."
+  - zh: "在預設清單新增『買牛奶』，備註：買 2% 牛奶。"
+  - en: "Insert a task right after 'Draft outline' named 'Collect references'."
+  - zh: "在『大綱草稿』之後插入任務：蒐集參考資料。"
+  - en: "Add a task 'Call mom' for tomorrow at 8 PM."
+  - zh: "新增待辦『打電話給媽媽』，時間明天晚上 8 點。"
+  - en: "Create 'Renew car insurance' due on 2025-09-15."
+  - zh: "建立『續保汽車保險』，到期日 2025-09-15。"
+  - en: "Add to the 'School' list: 'Finish lab report'."
+  - zh: "在『School』清單新增：完成實驗報告。"
+  - en: "Add 'CS531 homework' due next Monday 11:59 PM."
+  - zh: "新增『CS531 作業』，下週一晚間 11:59 截止。"
+  - en: "Create a subtask under 'Thesis' named 'Outline Chapter 2'."
+  - zh: "在『論文』底下新增子任務：第二章大綱。"
+  - en: "Add 'Email advisor about project' with a note and a link."
+  - zh: "新增『寄信給指導教授討論專題』，加上備註與連結。"
+  - en: "Add 'Buy birthday gift for Alex', note 'budget $30'."
+  - zh: "新增『幫 Alex 買生日禮物』，備註：預算 30 美元。"
+  - en: "Create 'Print tickets' due today at 6 PM."
+  - zh: "建立『列印票券』，到期時間今天晚上 6 點。"
+  - en: "Add 'Book dentist appointment' due on Sep 3."
+  - zh: "新增『預約牙醫』，到期日 9 月 3 日。"
+  - en: "Add 'Backup laptop' with link to the instruction page."
+  - zh: "新增『備份筆電』，附上教學網頁連結。"
+  - en: "Add 'Water the plants' and place it after 'Take out trash'."
+  - zh: "新增『澆花』，並排在『倒垃圾』之後。"
+
+negative_queries:
+  - en: "Schedule a meeting tomorrow from 3–4 PM."     # should go to Calendar
+  - zh: "安排明天 3–4 點的會議。"                         # 應走 Calendar
+  - en: "Find coffee shops near me."                    # should go to Maps Search
+  - zh: "找我附近的咖啡店。"                              # 應走 Maps Search
+  - en: "Navigate to 1500 SW Jefferson Ave."           # should go to Directions
+  - zh: "導航到 1500 SW Jefferson Ave。"                  # 應走 Directions
+  - en: "How long to walk from Kelley to Valley Library?"
+  - zh: "從 Kelley 走到 Valley Library 要多久？"
+  - en: "What's the weather this Friday?"
+  - zh: "這個星期五的天氣如何？"
+  - en: "Set a 10-minute timer."
+  - zh: "設定 10 分鐘計時器。"
+  - en: "Set an alarm for 7 AM."
+  - zh: "設 7 點的鬧鐘。"
+  - en: "Send an email to Bob."
+  - zh: "寄一封 email 給 Bob。"
+  - en: "Create a new Google Doc."
+  - zh: "建立一份 Google 文件。"
+  - en: "Translate '你好' to English."
+  - zh: "把「你好」翻成英文。"
+  - en: "Play some jazz on Spotify."
+  - zh: "在 Spotify 播放一些爵士樂。"
+  - en: "Save Alice's phone number to contacts."
+  - zh: "把 Alice 的電話存到通訊錄。"
+  - en: "Add a note in Google Keep: shopping list."
+  - zh: "在 Google Keep 新增備忘：購物清單。"
+  
+latency_ms_estimate: 300-800
+
+auth:
+  type: oauth2
+  oauth_provider: google
+  scopes:
+    - https://www.googleapis.com/auth/tasks
+  managed_by: code           # 由你的 get_credentials()／client library 注入
+  runtime: server
+  user_grant_required: true
+
+runtime_binding:
+  module: tools/google_calender.py   # ← 請改成你實際的模組路徑
+  function: google_tasks_create_task
+
+
+risk:
+  - en: "Task details may include sensitive info; avoid sharing links publicly."
+  - zh: "待辦內容可能含敏感資訊，避免公開分享連結。"

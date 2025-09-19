@@ -1,0 +1,185 @@
+# tool_cards/google_maps_get_place_details.yaml
+name: google_maps_get_place_details
+version: 1.0
+provider: google
+domain: maps
+capability: details
+modalities: ["text"]
+locales_supported: ["en", "zh"]
+is_support: false
+
+display_name:
+  en: "Maps: Place Details"
+  zh: "地圖：地點細節"
+
+aliases:
+  en: ["place details", "opening hours", "phone number", "website", "address details"]
+  zh: ["地點資訊", "營業時間", "電話", "官網", "地址資訊"]
+
+one_line_desc:
+  en: Retrieve specific details (address, phone, website, opening hours, etc.) for a place resolved by text query.
+  zh: 以文字查詢解析地點後，取得指定的細節（地址、電話、官網、營業時間等）。
+
+args_hint: ["query", "fields", "language"]
+
+args_schema:
+  query:
+    type: string
+    required: true
+    desc:
+      en: Free-text place query (name or address) to resolve a place_id via Find Place.
+      zh: 地點名稱或地址的文字查詢，會先透過 Find Place 解析出 place_id。
+    examples:
+      - "Valley Library, Oregon State University"
+      - "Starbucks on 9th St, Corvallis"
+      - "WinCo Foods Corvallis"
+
+  fields:
+    type: array
+    required: true
+    desc:
+      en: List of fields to fetch from Place Details API (e.g., formatted_address, international_phone_number, website, opening_hours, rating, user_ratings_total, url, geometry, business_status, price_level).
+      zh: 要從 Place Details API 取得的欄位清單（例如 formatted_address、international_phone_number、website、opening_hours、rating、user_ratings_total、url、geometry、business_status、price_level）。
+    examples:
+      - ["formatted_address", "international_phone_number", "website", "opening_hours"]
+      - ["rating", "user_ratings_total", "url"]
+      - ["geometry", "business_status", "price_level"]
+
+  language:
+    type: string
+    required: false
+    default: en
+    desc:
+      en: BCP-47 language tag for results (e.g., "en", "zh-TW").
+      zh: 結果語言（BCP-47，如 "en"、"zh-TW"）。
+
+validation_rules:
+  - required: ["query", "fields"]
+    message:
+      en: "Both 'query' and 'fields' are required."
+      zh: "必須同時提供 'query' 與 'fields'。"
+
+  - field: "fields"
+    type: array
+    min_len: 1
+    items_type: string
+    message:
+      en: "'fields' must be a non-empty array of strings."
+      zh: "'fields' 必須為非空字串陣列。"
+
+  - dedupe_array: "fields"
+    message:
+      en: "Duplicate field names will be de-duplicated."
+      zh: "重複的欄位名稱將自動去重。"
+
+  - info:
+      en: "The 'name' field is always included in the output even if not requested."
+      zh: "即使未要求，輸出仍會包含 'name' 欄位。"
+
+  - if_present: ["language"]
+    bcp47: true
+    message:
+      en: "Language should be a valid BCP-47 tag, e.g., 'en' or 'zh-TW'."
+      zh: "language 應為有效的 BCP-47 標籤，例如 'en' 或 'zh-TW'。"
+
+output_fields:
+  - name                      # always included by this tool
+  - formatted_address         # if requested
+  - geometry                  # if requested; includes {location:{lat,lng}, viewport...}
+  - opening_hours             # if requested; may include weekday_text, periods
+  - current_opening_hours     # if requested
+  - rating                    # if requested
+  - user_ratings_total        # if requested
+  - international_phone_number  # if requested
+  - formatted_phone_number    # if requested
+  - website                   # if requested
+  - url                       # if requested
+  - price_level               # if requested
+  - business_status           # if requested
+  - types                     # if requested
+  - photos                    # if requested
+  - reviews                   # if requested
+  - place_id                  # if requested
+  - error                     # present only on failure (string
+
+positive_queries:
+  - en: "What are the opening hours of Powell's City of Books (Downtown)?"
+  - zh: "波威爾書城（市中心店）的營業時間是什麼？"
+  - en: "What's the phone number for Din Tai Fung (Yongkang)?"
+  - zh: "鼎泰豐（永康店）的電話是多少？"
+  - en: "Give me the website and formatted address for Taipei 101 Observatory."
+  - zh: "台北 101 觀景台的官網與正式地址是什麼？"
+  - en: "Show the price level and rating for Le Bernardin."
+  - zh: "Le Bernardin 的價位等級與評分是多少？"
+  - en: "What's the formatted address of Kelley Engineering Center?"
+  - zh: "Kelley 工程中心的正式地址是什麼？"
+  - en: "Provide opening hours and phone for OSU Memorial Union."
+  - zh: "OSU 學生活動中心（Memorial Union）的營業時間與電話是什麼？"
+  - en: "What's the official website for Valley Rock Gym (Corvallis)?"
+  - zh: "Valley Rock Gym（Corvallis）的官方網站是什麼？"
+  - en: "Tell me the address and opening hours of OMSI."
+  - zh: "奧勒岡科學與工業博物館（OMSI）的地址與開放時間是什麼？"
+  - en: "Give me the phone number and rating of Starbucks on 5th Ave."
+  - zh: "第五大道那間 Starbucks 的電話與評分是多少？"
+  - en: "Show the website and user ratings total for Local Boyz Hawaiian Cafe."
+  - zh: "Local Boyz Hawaiian Cafe 的官網與評價總數是多少？"
+  - en: "What's the official site and phone number for The Broad museum?"
+  - zh: "The Broad 博物館的官網與電話是多少？"
+  - en: "Provide the formatted address and opening hours for the National Taiwan Museum."
+  - zh: "國立臺灣博物館的正式地址與開放時間是什麼？"
+  - en: "What is the phone number and website of Rogue Bayfront (Newport)?"
+  - zh: "Rogue Bayfront（Newport）的電話與官網是什麼？"
+  - en: "Show the price level and opening hours for Pizzeria Bianco (Town & Country)."
+  - zh: "Pizzeria Bianco（Town & Country 分店）的價位等級與營業時間是多少？"
+  - en: "Give me the address and rating for Alishan House Hotel."
+  - zh: "阿里山賓館的地址與評分是多少？"
+
+negative_queries:
+  - en: "Find the best ramen near me."          # → should use search_places
+  - zh: "找找附近最好的拉麵。"
+  - en: "Navigate to Din Tai Fung."            # → should use directions
+  - zh: "帶我去鼎泰豐。"
+  - en: "How long would it take to walk from Valley Library to KEC?"  # → should use directions
+  - zh: "從 Valley Library 走到 KEC 要多久？"
+  - en: "Recommend cheap brunch spots around NTU."  # → should use search_places
+  - zh: "推薦台大附近便宜的早午餐餐廳。"
+  - en: "Book a table at Le Bernardin tonight."     # → reservation/booking (not a details query)
+  - zh: "幫我預訂今晚 Le Bernardin 的餐位。"
+  - en: "Restaurants open now within 2 km."         # → should use search_places
+  - zh: "2 公里內現在有開的餐廳有哪些？"
+  - en: "Is there a Starbucks inside City Hall?"    # → needs search/discovery, not details of a single known place
+  - zh: "市政府大樓裡有 Starbucks 嗎？"
+  - en: "Which museum is the most popular in Portland?"  # → should use search_places
+  - zh: "波特蘭哪間博物館最受歡迎？"
+  - en: "Take me to the closest Local Boyz."        # → should use directions (and possibly prior search)
+  - zh: "帶我去最近的 Local Boyz。"
+  - en: "Compare ratings of three sushi places near me."  # → should use search_places
+  - zh: "比較我附近三家壽司店的評分。"
+  - en: "Schedule dinner with Alice at 7pm Friday." # → should use calendar_create_event
+  - zh: "排程週五晚上 7 點和 Alice 的晚餐。"
+  - en: "Remind me to call the restaurant tomorrow." # → should use tasks_create_task
+  - zh: "提醒我明天打電話給餐廳。"
+  - en: "What’s good to eat around here?"           # → should use search_places
+  - zh: "這附近有什麼好吃的？"
+  - en: "Is Din Tai Fung better than Jin Feng?"     # → opinion/comparison; not a single-place details query
+  - zh: "鼎泰豐比金峰更好嗎？"
+
+  
+latency_ms_estimate: 300-900
+
+auth:
+  type: api_key
+  env_vars: ["GOOGLE_MAPS_API_KEY"]   # 啟動時檢查需存在的環境變數
+  runtime: server                     # 只在伺服端使用，不下發到 client
+  inject:
+    where: query                      # 以查詢參數方式注入
+    name: key                         # 參數名為 ?key=...
+    from_env: GOOGLE_MAPS_API_KEY     # 取自環境變數
+
+runtime_binding:
+  module: tools/google_maps.py
+  function: google_maps_get_place_details
+
+risk:
+  - en: "Do not expose sensitive addresses or phone numbers without user consent."
+  - zh: "未經同意請勿暴露敏感地址或電話資訊。"
