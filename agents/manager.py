@@ -1,54 +1,114 @@
-# agents/manager.py
+"""
+Enhanced AgentManager for the develop branch.
+
+This implementation wraps the new LangGraph based routing (and optional
+planning) pipeline defined in ``agents.graphs.pipeline_graph``.  It
+serves as a drop‐in replacement for the previous stage‑1 manager,
+offering the same high‑level ``plan`` method but leveraging the
+underlying graph to perform intent classification, tool selection and
+optional planning in a single call.
+
+Key differences from the old implementation:
+
+* The manager defers all routing logic to the LangGraph pipeline
+  defined in ``agents.graphs.pipeline_graph``.  This removes the
+  explicit dependency on ``MainRouterAgent`` and ``QueryRouter``.  The
+  pipeline internally handles main routing, optional query routing
+  (depending on the ``run_mode``), fusing results and generating plans.
+* Configuration values (e.g. run mode, scoring thresholds) are
+  translated into graph parameters.  If a capability map is provided
+  via the embedding config file, it will be used to filter allowed
+  user‑facing tools.
+* The ``plan`` method now returns a richer structure including the
+  intermediate route and needs, the list of query router candidates,
+  and the optional planning output.  This affords downstream
+  components greater flexibility to introspect decisions and act on
+  plans.  To maintain backward compatibility, the top‑level keys
+  ``final_route`` and ``tools`` remain unchanged.
+
+If ``upgrade_to_complex_if_multi_need`` is enabled and the model
+predicts a simple route while producing two or more needs, the
+manager will upgrade the final route to ``COMPLEX_TOOL`` and expose
+all unique needs as tools.  This mirrors the consistency override
+behaviour of the original manager.
+"""
+
 from __future__ import annotations
 
 import json
-import os
 import logging
+import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from time import perf_counter
+from typing import Any, Dict, List, Optional, Set
 
-# --- External components already in the repo ---
-from agents.main_router_agent import MainRouterAgent
-from agents.query_router import QueryRouter, RouterConfig
+# Import the unified routing→planning pipeline.  It is assumed that
+# ``agents.graphs.pipeline_graph`` exists in the develop branch and
+# exposes a ``run_agent`` convenience function.  When invoked, it
+# returns a dictionary containing keys such as ``final_route``,
+# ``tools``, ``plan``, ``route``, ``needs``, ``qr_candidates`` and
+# ``debug``.
+try:
+    from agents.graphs.pipeline_graph import run_agent as _run_agent_pipeline  # type: ignore
+except Exception as e:  # pragma: no cover
+    # Fallback for environments where the pipeline is not available.  In
+    # such cases, developers should ensure that the appropriate graph
+    # modules are on the PYTHONPATH.  A NotImplementedError will be
+    # raised when attempting to plan.
+    _run_agent_pipeline = None  # type: ignore
 
 
-# ----------------------------
-# Helper dataclasses
-# ----------------------------
 @dataclass
 class ManagerConfig:
-    # Orchestration mode:
-    #   - "fusion": run MainRouter + QueryRouter in parallel, then fuse (default)
-    #   - "main_only": run only MainRouter, tools taken directly from needs (no mapping)
+    """
+    Configuration options for AgentManager.
+
+    Attributes
+    ----------
+    run_mode: str
+        Orchestration mode for routing.  ``"fusion"`` runs both the
+        main router and query router; ``"main_only"`` skips the query
+        router and derives tools directly from the main router's needs.
+    embedding_config_path: str
+        Path to the embedding configuration JSON.  When provided, the
+        manager sets ``QUERY_ROUTER_CONFIG`` in the environment and
+        attempts to derive a set of user‑facing tools from the
+        capability map within the config.  This set is passed to the
+        graph as ``allowed_capabilities``.
+    top_k: int
+        Maximum number of tools to return.  This maps to the
+        ``max_tools`` parameter of the routing graph.
+    score_floor: float
+        Minimum score threshold for query router candidates.  This
+        maps to ``min_qr_score`` in the routing graph.
+    upgrade_to_complex_if_multi_need: bool
+        Whether to override a ``SIMPLE_TOOL`` route with
+        ``COMPLEX_TOOL`` when two or more needs are predicted.  This
+        mirrors the original manager's behaviour.
+    enable_debug_logging: bool
+        If true, the manager logs detailed diagnostic information.
+    """
+
     run_mode: str = "fusion"
-
-    # embeddings / router config (fusion mode only)
-    embedding_config_path: str = "embeddings/config.json"
-
-    # QueryRouter settings (fusion mode only)
-    top_k: int = 3  # Always ask QueryRouter for top K distinct user-facing tools
-    score_floor: float = 0.0  # we rely on needs coverage, not absolute thresholds
-
-    # Consistency override (fusion mode)
-    upgrade_to_complex_if_multi_need: bool = True  # if >=2 needs, force complex
-
-    # Logging
+    embedding_config_path: str = ""
+    top_k: int = 3
+    score_floor: float = 0.0
+    upgrade_to_complex_if_multi_need: bool = True
     enable_debug_logging: bool = True
 
-    def __post_init__(self):
-        # Normalize run_mode
+    def __post_init__(self) -> None:
+        # Normalize the run mode and default to fusion on invalid input
         self.run_mode = (self.run_mode or "fusion").lower().strip()
         if self.run_mode not in ("fusion", "main_only"):
             self.run_mode = "fusion"
 
 
 def _setup_logger(enable_debug: bool = True) -> logging.Logger:
+    """Configure and return a logger for the manager."""
     logger = logging.getLogger("AgentManager")
     if not logger.handlers:
-        level_name = os.getenv("AGENTMGR_LOGLEVEL",
-                               "DEBUG" if enable_debug else "INFO")
+        level_name = os.getenv(
+            "AGENTMGR_LOGLEVEL", "DEBUG" if enable_debug else "INFO"
+        )
         level = getattr(logging, level_name.upper(),
                         logging.DEBUG if enable_debug else logging.INFO)
         logging.basicConfig(
@@ -59,373 +119,175 @@ def _setup_logger(enable_debug: bool = True) -> logging.Logger:
     return logger
 
 
-def _log_json(logger: logging.Logger, title: str, obj: Any, level: int = logging.DEBUG):
-    try:
-        logger.log(level, "%s: %s", title, json.dumps(obj, ensure_ascii=False))
-    except Exception:
-        logger.log(level, "%s (repr): %r", title, obj)
-
-
-def _brief_results(results: List[Dict[str, Any]], max_items: int = 3) -> List[Dict[str, Any]]:
-    out = []
-    for r in results[:max_items]:
-        out.append({
-            "card": r.get("card"),
-            "score": round(float(r.get("score", 0.0)), 4),
-            "max_pos": round(float(r.get("max_pos", 0.0)), 4),
-            "avg_topk": round(float(r.get("avg_topk", 0.0)), 4),
-            "max_neg": round(float(r.get("max_neg", 0.0)), 4),
-        })
-    return out
-
-
-# ----------------------------
-# Core manager (fusion layer)
-# ----------------------------
 class AgentManager:
     """
-    Stage-1 Orchestrator with two modes:
+    Stage‑1+ manager built atop LangGraph.
 
-    1) fusion  (default):
-       - 並行跑 MainRouter (route+needs) 與 QueryRouter (Top-K 候選)
-       - 規則融合：一致性覆寫 + needs 精確匹配 + 兜底為 needs 名稱（無映射）
-       - 回傳 {final_route, tools, debug}
-
-    2) main_only:
-       - 只跑 MainRouter（最低延遲）
-       - 直接以 needs（真實 user-facing tool 名稱）決定 tools（不查 embedding、不做映射）
-       - 回傳格式與 fusion 完全一致，便於 A/B 測
+    This class exposes a ``plan`` method that returns a dict
+    containing the final route, selected tools and auxiliary
+    information.  Internally it delegates all routing and (optional)
+    planning to the LangGraph pipeline defined in
+    ``agents.graphs.pipeline_graph``.
     """
 
-    def __init__(self, cfg: Optional[ManagerConfig] = None):
+    def __init__(self, cfg: Optional[ManagerConfig] = None) -> None:
         self.cfg = cfg or ManagerConfig()
         self.log = _setup_logger(self.cfg.enable_debug_logging)
 
-        self.log.info("Initializing AgentManager... mode=%s",
-                      self.cfg.run_mode)
+        self.log.info(
+            "Initializing AgentManager (graph-based) ... mode=%s", self.cfg.run_mode)
 
-        # MainRouter is always needed
-        t0 = perf_counter()
-        self.main_router = MainRouterAgent()
-        t1 = perf_counter()
-        self.log.info("MainRouterAgent initialized in %.1f ms",
-                      (t1 - t0) * 1000)
+        # Set up environment variable so that QueryRouterNode can locate the
+        # embedding config when running in fusion mode.  This mirrors the
+        # behaviour of the original manager.  Note that if the file does
+        # not exist, the query router may fail and be gracefully skipped.
+        if self.cfg.embedding_config_path:
+            os.environ["QUERY_ROUTER_CONFIG"] = self.cfg.embedding_config_path
+            self.log.debug("Set QUERY_ROUTER_CONFIG=%s",
+                           self.cfg.embedding_config_path)
 
-        # Capability table for user-facing check in fusion
-        self.card_cap: Dict[str, Dict[str, Any]] = {}
+        # Attempt to derive allowed user‑facing tools from the capability
+        # map.  The config file is expected to contain a ``capability``
+        # dictionary mapping card names to metadata.  Only cards where
+        # ``is_support`` is false are considered user‑facing.  If the
+        # file cannot be loaded or does not contain such a map, the
+        # graph will fall back to its built‑in allowed set.
+        self.allowed_caps: Optional[Set[str]] = None
+        if self.cfg.embedding_config_path:
+            try:
+                with open(self.cfg.embedding_config_path, "r", encoding="utf-8") as f:
+                    cfg_raw = json.load(f)
+                cap_map = cfg_raw.get("capability", {})
+                allowed: Set[str] = set()
+                for card, meta in cap_map.items():
+                    if not isinstance(meta, dict) or not meta.get("is_support", False):
+                        allowed.add(card)
+                if allowed:
+                    self.allowed_caps = allowed
+                    self.log.info(
+                        "Loaded %d allowed capabilities from config.", len(allowed))
+            except Exception as e:
+                self.log.warning(
+                    "Could not load capability map from '%s': %s", self.cfg.embedding_config_path, e
+                )
 
-        # QueryRouter + capability map are only needed in fusion mode
-        if self.cfg.run_mode == "fusion":
-            t2 = perf_counter()
-            self.router_cfg = RouterConfig.from_json(
-                self.cfg.embedding_config_path)
-            self.qrouter = QueryRouter(self.router_cfg)
-            t3 = perf_counter()
-            self.log.info("QueryRouter initialized in %.1f ms",
-                          (t3 - t2) * 1000)
-
-            # Load capability map from embeddings/config.json
-            with open(self.cfg.embedding_config_path, "r", encoding="utf-8") as f:
-                _cfg_raw = json.load(f)
-            self.card_cap = _cfg_raw.get("capability", {})
-            _log_json(self.log, "Loaded capability map", self.card_cap)
-        else:
-            self.log.info("Fusion components skipped (main_only mode).")
+        # Verify that the pipeline function is available
+        if _run_agent_pipeline is None:  # pragma: no cover
+            self.log.error(
+                "agents.graphs.pipeline_graph.run_agent could not be imported. "
+                "Ensure that the develop branch graph modules are accessible."
+            )
 
         self.log.info("AgentManager ready.")
 
-    # ---------- public API ----------
-    def plan(self, user_text: str) -> Dict[str, Any]:
-        """
-        Wrapper that dispatches to the selected run_mode.
-        Returns: {final_route, tools, debug}
-        """
-        if self.cfg.run_mode == "main_only":
-            return self._plan_main_only(user_text)
-        # default fusion
-        return self._plan_fusion(user_text)
+    # ----- internal -----
+    def _graph_params(self) -> Dict[str, Any]:
+        """Map ManagerConfig into parameters for the routing pipeline."""
+        params: Dict[str, Any] = {
+            "mode": self.cfg.run_mode,
+            "min_qr_score": self.cfg.score_floor,
+            "max_tools": self.cfg.top_k,
+            # preserve the original selection logic: 1 primary tool for
+            # simple routes, 2 or more for complex routes
+            "simple_max_primary": 1,
+            "complex_min_primary": 2,
+            # always require user‑facing tools; this prevents support tools
+            # from being surfaced to the user
+            "require_user_facing": True,
+        }
+        if self.allowed_caps:
+            params["allowed_capabilities"] = self.allowed_caps
+        return params
 
-    # ---------- MAIN ONLY ----------
-    def _plan_main_only(self, user_text: str) -> Dict[str, Any]:
-        self.log.info("=== PLAN (main_only) START ===")
+    # ----- public API -----
+    def plan(self, user_text: str, memory: Any = None) -> Dict[str, Any]:
+        """
+        Determine the agent's high‑level intent and select appropriate tools.
+
+        Parameters
+        ----------
+        user_text: str
+            Raw user input.
+        memory: Any, optional
+            Conversation memory or context object.  This is passed
+            through to the underlying nodes unchanged.
+
+        Returns
+        -------
+        Dict[str, Any]
+            A structure containing at least the keys ``final_route``
+            and ``tools``.  Additional keys include ``plan``, ``route``,
+            ``needs``, ``qr_candidates`` and ``debug``.
+        """
+        if not _run_agent_pipeline:
+            raise NotImplementedError(
+                "The routing/planning pipeline is unavailable. "
+                "Check your installation of agents.graphs.pipeline_graph."
+            )
+
+        self.log.info("=== PLAN (%s) START ===", self.cfg.run_mode)
         self.log.debug("User text: %s", user_text)
 
-        t0 = perf_counter()
-        mr_out = {}
+        # Invoke the LangGraph pipeline
+        params = self._graph_params()
         try:
-            mr_out = self.main_router.classify(user_text)
+            res: Dict[str, Any] = _run_agent_pipeline(
+                user_text, memory=memory, **params)
         except Exception as e:
-            self.log.exception("[MainRouter] error: %s", e)
-            mr_out = {"route": "GENERAL_CHAT", "needs": [], "error": str(e)}
-        t1 = perf_counter()
-        self.log.info("[MainRouter] ok elapsed_ms=%.0f", (t1 - t0) * 1000)
-        _log_json(self.log, "[MainRouter] out", mr_out)
-
-        route = (mr_out or {}).get("route") or "GENERAL_CHAT"
-        needs: List[str] = (mr_out or {}).get("needs") or []
-        self.log.debug("Main-only normalized route: %s", route)
-        self.log.debug("Main-only normalized needs: %s", needs)
-
-        tools: List[str] = []
-        debug: Dict[str, Any] = {"route_from_main": route, "needs": needs, "topk": [],
-                                 "coverage": [], "fallbacks": []}
-
-        # 直接從 needs 產生 tools（SIMPLE → 取首個；COMPLEX → 全部去重保序）
-        if route == "SIMPLE_TOOL":
-            if needs:
-                tools = [needs[0]]
-                debug["coverage"].append(
-                    {"need": needs[0], "card": needs[0], "how": "need_exact"})
-        elif route == "COMPLEX_TOOL":
-            seen = set()
-            for n in needs:
-                if n not in seen:
-                    tools.append(n)
-                    seen.add(n)
-                    debug["coverage"].append(
-                        {"need": n, "card": n, "how": "need_exact"})
-        else:
-            # GENERAL_CHAT / EXIT → no tools
-            pass
-
-        result = {
-            "final_route": route,
-            "tools": tools,
-            "debug": debug
-        }
-        _log_json(self.log, "FINAL PLAN (main_only)",
-                  result, level=logging.INFO)
-        self.log.info("=== PLAN (main_only) END ===")
-        return result
-
-    # ---------- FUSION (parallel main + query) ----------
-    def _plan_fusion(self, user_text: str) -> Dict[str, Any]:
-        self.log.info("=== PLAN (fusion) START ===")
-        self.log.debug("User text: %s", user_text)
-
-        mr_out, qr_out = self._run_parallel(user_text)
-
-        # Normalize main_router output
-        route = (mr_out or {}).get("route") or "GENERAL_CHAT"
-        needs = (mr_out or {}).get("needs") or []
-        self.log.debug("MainRouter normalized route: %s", route)
-        self.log.debug("MainRouter normalized needs: %s", needs)
-
-        # Normalize query_router output
-        qr_results = (qr_out or {}).get("results", [])
-        self.log.debug("QueryRouter Top-K count: %d", len(qr_results))
-        self.log.debug("QueryRouter Top-K (brief): %s",
-                       _brief_results(qr_results, max_items=3))
-
-        # Consistency override：needs >= 2 一律 complex
-        if self.cfg.upgrade_to_complex_if_multi_need and len(needs) >= 2 and route == "SIMPLE_TOOL":
-            self.log.info("Override route -> COMPLEX_TOOL (needs >= 2)")
-            route = "COMPLEX_TOOL"
-
-        # Make final selection per rules
-        final_route, chosen, debug = self._fuse_decision(
-            route, needs, qr_results)
-
-        result = {
-            "final_route": final_route,
-            "tools": chosen,           # user-facing only
-            "debug": {
-                "route_from_main": route,
-                "needs": needs,
-                "topk": qr_results,
-                **debug
+            # In the event of any exception, fall back to GENERAL_CHAT
+            # with no tools.  The error is surfaced in the debug field.
+            self.log.exception("Pipeline invocation failed: %s", e)
+            return {
+                "final_route": "GENERAL_CHAT",
+                "tools": [],
+                "debug": {"error": str(e)},
             }
-        }
-        _log_json(self.log, "FINAL PLAN (fusion)", result, level=logging.INFO)
-        self.log.info("=== PLAN (fusion) END ===")
-        return result
 
-    # ---------- internal ----------
-    def _run_parallel(self, user_text: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """在同一個 stage 並行跑 main_router 與 query_router，等兩者完成後回傳"""
-        def call_main():
-            t0 = perf_counter()
-            try:
-                out = self.main_router.classify(user_text)
-                t1 = perf_counter()
-                self.log.info("[MainRouter] ok elapsed_ms=%.0f out_keys=%s",
-                              (t1 - t0) * 1000, list(out.keys()) if isinstance(out, dict) else type(out))
-                _log_json(self.log, "[MainRouter] out", out)
-                return out
-            except Exception as e:
-                t1 = perf_counter()
-                self.log.exception(
-                    "[MainRouter] error after %.0f ms: %s", (t1 - t0) * 1000, e)
-                return {"route": "GENERAL_CHAT", "needs": [], "error": str(e)}
-
-        def call_query():
-            t0 = perf_counter()
-            try:
-                out = self.qrouter.route(user_text, top_k=self.cfg.top_k)
-                t1 = perf_counter()
-                self.log.info(
-                    "[QueryRouter] ok elapsed_ms=%.0f", (t1 - t0) * 1000)
-                _log_json(self.log, "[QueryRouter] out.brief", {
-                    "results_brief": _brief_results(out.get("results", []), max_items=self.cfg.top_k),
-                    "n_all": len(out.get("results_all", []))
-                })
-                return out
-            except Exception as e:
-                t1 = perf_counter()
-                self.log.exception(
-                    "[QueryRouter] error after %.0f ms: %s", (t1 - t0) * 1000, e)
-                return {"results": [], "error": str(e)}
-
-        self.log.debug("Launching parallel routers...")
-        outs = {}
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            fut_mr = ex.submit(call_main)
-            fut_qr = ex.submit(call_query)
-
-            for fut in as_completed([fut_mr, fut_qr]):
-                try:
-                    res = fut.result()
-                    if res and isinstance(res, dict) and "results" in res:
-                        outs["qr"] = res
-                    else:
-                        outs["mr"] = res
-                except Exception as e:
-                    if fut is fut_mr:
-                        outs["mr"] = {"route": "GENERAL_CHAT",
-                                      "needs": [], "error": str(e)}
-                    else:
-                        outs["qr"] = {"results": [], "error": str(e)}
-        self.log.debug("Parallel routers finished. Keys: %s",
-                       list(outs.keys()))
-        return outs.get("mr", {}), outs.get("qr", {})
-
-    def _is_user_facing(self, card: str) -> bool:
-        meta = self.card_cap.get(card) or {}
-        return not bool(meta.get("is_support", False))
-
-    # --- simplified selection helpers (no capability mapping) ---
-
-    def _pick_exact_match_from_topk(
-        self, needed_tool: str, candidates: List[Dict[str, Any]]
-    ) -> Optional[str]:
-        """
-        從 Top-K 候選中找與 needed_tool 完全相同名稱的卡（且為 user-facing）。
-        """
-        for r in candidates:
-            card = r.get("card")
-            if card and card == needed_tool and self._is_user_facing(card):
-                return card
-        return None
-
-    def _fuse_decision(
-        self,
-        route: str,
-        needs: List[str],
-        results: List[Dict[str, Any]],
-    ) -> Tuple[str, List[str], Dict[str, Any]]:
-        """
-        依規則做融合決策，產生最終 tools（只含 user-facing）
-        規則（無映射、無 fallback_by_capability）：
-          - SIMPLE: 若 Top-K 有與 needs[0] 同名卡 → 用它；否則用 needs[0]；若無 needs → 用 Top-K 第一張 user-facing（若有）
-          - COMPLEX: 對每個 need 依序：若 Top-K 有同名卡則用之；否則直接用 need；最後去重保序
-        """
-        debug: Dict[str, Any] = {"coverage": [], "fallbacks": []}
-        chosen: List[str] = []
-
-        self.log.info("Fusion start: route=%s needs=%s", route, needs)
-        self.log.debug("Candidate results (brief): %s",
-                       _brief_results(results, max_items=5))
-
-        # SIMPLE
-        if route == "SIMPLE_TOOL":
-            if needs:
-                need0 = needs[0]
-                pick = self._pick_exact_match_from_topk(need0, results)
-                if pick:
-                    chosen = [pick]
-                    debug["coverage"].append(
-                        {"need": need0, "card": pick, "how": "topk_exact"})
-                    self.log.info("SIMPLE -> choose topk exact: %s", pick)
-                else:
-                    chosen = [need0]
-                    debug["coverage"].append(
-                        {"need": need0, "card": need0, "how": "need_exact"})
-                    self.log.info("SIMPLE -> choose need directly: %s", need0)
-            else:
-                # 無 needs → 取第一張 user-facing（若存在）
-                top1 = None
-                for r in results:
-                    if r.get("card") and self._is_user_facing(r["card"]):
-                        top1 = r["card"]
-                        break
-                if top1:
-                    chosen = [top1]
-                    debug["coverage"].append(
-                        {"need": None, "card": top1, "how": "topk_first"})
-                    self.log.warning(
-                        "SIMPLE guard pick first available: %s", top1)
-            return "SIMPLE_TOOL", chosen, debug
-
-        # COMPLEX
-        if route == "COMPLEX_TOOL":
-            ordered: List[str] = []
+        # Optionally override SIMPLE→COMPLEX if multiple needs are predicted
+        needs: List[str] = list(res.get("needs") or [])
+        final_route: str = res.get("final_route") or "GENERAL_CHAT"
+        if (
+            self.cfg.upgrade_to_complex_if_multi_need
+            and final_route == "SIMPLE_TOOL"
+            and len(needs) >= 2
+        ):
+            self.log.info(
+                "Override route -> COMPLEX_TOOL (needs >= 2 and simple predicted)"
+            )
+            final_route = "COMPLEX_TOOL"
+            # Derive tools by taking all unique needs
+            seen: Set[str] = set()
+            tools: List[str] = []
             for need in needs:
-                pick = self._pick_exact_match_from_topk(need, results)
-                if pick:
-                    ordered.append(pick)
-                    debug["coverage"].append(
-                        {"need": need, "card": pick, "how": "topk_exact"})
-                else:
-                    ordered.append(need)
-                    debug["coverage"].append(
-                        {"need": need, "card": need, "how": "need_exact"})
+                if need not in seen:
+                    tools.append(need)
+                    seen.add(need)
+            res["tools"] = tools
+            res["final_route"] = final_route
 
-            # 去重保序
-            seen = set()
-            for card in ordered:
-                if card not in seen and self._is_user_facing(card):
-                    chosen.append(card)
-                    seen.add(card)
+        # Compose final output.  Expose additional fields for
+        # transparency while keeping the core contract of ``final_route``
+        # and ``tools`` intact.
+        out: Dict[str, Any] = {
+            "final_route": final_route,
+            "tools": res.get("tools", []),
+            # Pass through the optional planning output.  Consumers may
+            # ignore this field if they only need routing.
+            "plan": res.get("plan"),
+            # Include intermediate routing info for debugging/introspection
+            "route": res.get("route"),
+            "needs": needs,
+            "qr_candidates": res.get("qr_candidates", []),
+            "debug": res.get("debug", {}),
+        }
 
-            # 若完全沒有 needs（少見），就選前 2 張 user-facing
-            if not needs and not chosen:
-                for r in results:
-                    c = r.get("card")
-                    if c and self._is_user_facing(c):
-                        chosen.append(c)
-                    if len(chosen) >= 2:
-                        break
-                self.log.info(
-                    "COMPLEX no-needs -> choose first two user-facing: %s", chosen)
-
-            self.log.info("COMPLEX chosen tools: %s", chosen)
-            _log_json(self.log, "COMPLEX coverage", debug["coverage"])
-            return "COMPLEX_TOOL", chosen, debug
-
-        # GENERAL_CHAT / EXIT：不使用工具
-        self.log.info("Route=%s -> no tools", route)
-        return route, [], debug
+        self.log.debug("Plan result: %s", out)
+        self.log.info("=== PLAN (%s) END ===", self.cfg.run_mode)
+        return out
 
 
-# ----------------------------
-# Minimal CLI test
-# ----------------------------
-if __name__ == "__main__":
-    import argparse
-
-    ap = argparse.ArgumentParser(
-        description="Stage-1 Manager test (fusion or main_only).")
-    ap.add_argument("--text", required=True, help="user input")
-    ap.add_argument("--config", default="embeddings/config.json")
-    ap.add_argument("--mode", default="fusion",
-                    choices=["fusion", "main_only"])
-    args = ap.parse_args()
-
-    mgr = AgentManager(ManagerConfig(
-        run_mode=args.mode,
-        embedding_config_path=args.config
-    ))
-    out = mgr.plan(args.text)
-
-    print("\n=== FINAL PLAN ===")
-    print(json.dumps(out, ensure_ascii=False, indent=2))
+# Allow external modules to import the manager class and config easily
+__all__ = [
+    "ManagerConfig",
+    "AgentManager",
+]
